@@ -1,16 +1,11 @@
 package chatgptauth
 
 import (
-	"bufio"
 	"bytes"
-	b64 "encoding/base64"
 	"errors"
 	"fmt"
-	"image"
-	"image/png"
 	"io"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -19,8 +14,6 @@ import (
 	http "github.com/saucesteals/fhttp"
 	"github.com/saucesteals/fhttp/cookiejar"
 	"github.com/saucesteals/mimic"
-	"github.com/srwiley/oksvg"
-	"github.com/srwiley/rasterx"
 	"github.com/tidwall/gjson"
 )
 
@@ -29,46 +22,19 @@ type Credentials struct {
 	ExpiresAt   string `json:"expires_at"`
 }
 
+// Auth contains the state for an authenticated user's session.
 type Auth struct {
 	EmailAddress string
 	Password     string
-	UserAgent    string
+	userAgent    string
+	state        string
 	session      *http.Client
 	m            *mimic.ClientSpec
 	logger       *zerolog.Logger
 }
 
-// Thanks usual human
-// https://stackoverflow.com/questions/42993407/how-to-create-and-export-svg-to-png-jpeg
-func svgSrcToPng(src string) error {
-	decoded, err := b64.StdEncoding.DecodeString(src[26:])
-
-	if err != nil {
-		return err
-	}
-
-	icon, _ := oksvg.ReadIconStream(bytes.NewReader(decoded))
-
-	w := int(icon.ViewBox.W) * 5 // Make it big
-	h := int(icon.ViewBox.H) * 5
-
-	icon.SetTarget(0, 0, float64(w), float64(h))
-	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
-	icon.Draw(rasterx.NewDasher(w, h, rasterx.NewScannerGV(w, h, rgba, rgba.Bounds())), 1)
-
-	out, err := os.Create("captcha.png")
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	err = png.Encode(out, rgba)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
+// NewAuthClient creates a new authenticator, performing valiation on the parameters.
+// If the logger pointer is nil, a NOOP logger is used.
 func NewAuthClient(email, password, proxy string, logger *zerolog.Logger) (auth *Auth, err error) {
 	jar, _ := cookiejar.New(nil)
 	userAgent := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36"
@@ -102,7 +68,7 @@ func NewAuthClient(email, password, proxy string, logger *zerolog.Logger) (auth 
 		newClient = &http.Client{Jar: jar, Transport: m.ConfigureTransport(&http.Transport{}), Timeout: 20 * time.Second}
 	}
 
-	return &Auth{EmailAddress: email, Password: password, UserAgent: userAgent, session: newClient, m: m, logger: lg}, nil
+	return &Auth{EmailAddress: email, Password: password, userAgent: userAgent, session: newClient, m: m, logger: lg}, nil
 }
 
 func (a *Auth) performGet(url string, headers http.Header) (resp *http.Response, body []byte, statusCode int, err error) {
@@ -186,7 +152,7 @@ func (a *Auth) begin() error {
 		"sec-ch-ua-platform":        {"\"Windows\""},
 		"dnt":                       {"1"},
 		"upgrade-insecure-requests": {"1"},
-		"user-agent":                {a.UserAgent},
+		"user-agent":                {a.userAgent},
 		"accept":                    {"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9"},
 		"sec-fetch-site":            {"none"},
 		"sec-fetch-mode":            {"navigate"},
@@ -218,7 +184,7 @@ func (a *Auth) getCsrf() (token string, err error) {
 		"sec-ch-ua":          {a.m.ClientHintUA()},
 		"dnt":                {"1"},
 		"sec-ch-ua-mobile":   {"?0"},
-		"user-agent":         {a.UserAgent},
+		"user-agent":         {a.userAgent},
 		"sec-ch-ua-platform": {"\"Windows\""},
 		"accept":             {"*/*"},
 		"sec-fetch-site":     {"same-origin"},
@@ -257,7 +223,7 @@ func (a *Auth) postLoginPrompt(token string) (nextUrl string, err error) {
 		"sec-ch-ua-platform": {"\"Windows\""},
 		"dnt":                {"1"},
 		"sec-ch-ua-mobile":   {"?0"},
-		"user-agent":         {a.UserAgent},
+		"user-agent":         {a.userAgent},
 		"content-type":       {"application/x-www-form-urlencoded"},
 		"accept":             {"*/*"},
 		"origin":             {"https://chat.openai.com"},
@@ -303,7 +269,7 @@ func (a *Auth) postLoginPrompt(token string) (nextUrl string, err error) {
 }
 
 // Follows the 302 redirect to Identifier
-func (a *Auth) auth0AuthorizeAndIdentifier(endpoint string) (state string, hasCaptcha bool, err error) {
+func (a *Auth) auth0AuthorizeAndIdentifier(endpoint string) (state string, captcha Captcha, err error) {
 	//This function actually does two requests because it follow the redirect, the header order fo the second one might not be correct
 	headers := http.Header{
 		"sec-ch-ua":                 {a.m.ClientHintUA()},
@@ -311,7 +277,7 @@ func (a *Auth) auth0AuthorizeAndIdentifier(endpoint string) (state string, hasCa
 		"sec-ch-ua-platform":        {"\"Windows\""},
 		"upgrade-insecure-requests": {"1"},
 		"dnt":                       {"1"},
-		"user-agent":                {a.UserAgent},
+		"user-agent":                {a.userAgent},
 		"accept":                    {"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9"},
 		"sec-fetch-site":            {"same-site"},
 		"sec-fetch-mode":            {"navigate"},
@@ -325,7 +291,7 @@ func (a *Auth) auth0AuthorizeAndIdentifier(endpoint string) (state string, hasCa
 	resp, body, statusCode, err := a.performGet(endpoint, headers)
 
 	if err != nil {
-		return "", false, err
+		return "", "", err
 	}
 
 	switch statusCode {
@@ -333,28 +299,24 @@ func (a *Auth) auth0AuthorizeAndIdentifier(endpoint string) (state string, hasCa
 		state := resp.Request.URL.Query().Get("state")
 
 		if state == "" {
-			return "", false, errors.New("auth0AuthorizeAndIdentifier: state not found")
+			return "", "", errors.New("auth0AuthorizeAndIdentifier: state not found")
 		}
 
 		doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(body)))
 		if err != nil {
-			return "", false, errors.New("auth0AuthorizeAndIdentifier: invalid html")
+			return "", "", errors.New("auth0AuthorizeAndIdentifier: invalid html")
 		}
 
 		challange, exists := doc.Find("img[alt='captcha']").First().Attr("src")
 
 		if exists {
-			a.logger.Info().Msg("Captcha detected, saving as captcha.png")
-			err := svgSrcToPng(challange)
-			if err != nil {
-				return "", false, err
-			}
-			return state, true, nil
+			a.logger.Info().Msg("Captcha detected")
+			return state, Captcha(challange), nil
 		}
 
-		return state, false, nil
+		return state, "", nil
 	default:
-		return "", false, fmt.Errorf("auth0AuthorizeAndIdentifier: invalid status code returned (%d)", statusCode)
+		return "", "", fmt.Errorf("auth0AuthorizeAndIdentifier: invalid status code returned (%d)", statusCode)
 	}
 }
 
@@ -370,7 +332,7 @@ func (a *Auth) postUserName(state, captcha string) error {
 		"dnt":                       {"1"},
 		"upgrade-insecure-requests": {"1"},
 		"content-type":              {"application/x-www-form-urlencoded"},
-		"user-agent":                {a.UserAgent},
+		"user-agent":                {a.userAgent},
 		"accept":                    {"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9"},
 		"sec-fetch-site":            {"same-origin"},
 		"sec-fetch-mode":            {"navigate"},
@@ -426,7 +388,7 @@ func (a *Auth) postPassword(state string) (newState string, err error) {
 		"dnt":                       {"1"},
 		"upgrade-insecure-requests": {"1"},
 		"content-type":              {"application/x-www-form-urlencoded"},
-		"user-agent":                {a.UserAgent},
+		"user-agent":                {a.userAgent},
 		"accept":                    {"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9"},
 		"sec-fetch-site":            {"same-origin"},
 		"sec-fetch-mode":            {"navigate"},
@@ -475,7 +437,7 @@ func (a *Auth) resumeSession(newState, oldState string) (nextUrl string, err err
 		"cache-control":             {"max-age=0"},
 		"dnt":                       {"1"},
 		"upgrade-insecure-requests": {"1"},
-		"user-agent":                {a.UserAgent},
+		"user-agent":                {a.userAgent},
 		"accept":                    {"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9"},
 		"sec-fetch-site":            {"same-origin"},
 		"sec-fetch-mode":            {"navigate"},
@@ -518,7 +480,7 @@ func (a *Auth) authCallback(endpoint string) (token string, err error) {
 		"sec-ch-ua-platform":        {"\"Windows\""},
 		"dnt":                       {"1"},
 		"upgrade-insecure-requests": {"1"},
-		"user-agent":                {a.UserAgent},
+		"user-agent":                {a.userAgent},
 		"accept":                    {"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9"},
 		"sec-fetch-site":            {"same-site"},
 		"sec-fetch-mode":            {"navigate"},
@@ -569,7 +531,7 @@ func (a *Auth) authSession() (creds *Credentials, err error) {
 		"sec-ch-ua":          {a.m.ClientHintUA()},
 		"dnt":                {"1"},
 		"sec-ch-ua-mobile":   {"?0"},
-		"user-agent":         {a.UserAgent},
+		"user-agent":         {a.userAgent},
 		"sec-ch-ua-platform": {"\"Windows\""},
 		"accept":             {"*/*"},
 		"sec-fetch-site":     {"same-origin"},
@@ -607,7 +569,10 @@ func (a *Auth) authSession() (creds *Credentials, err error) {
 	}
 }
 
-func (a *Auth) Authenticate() (cred *Credentials, err error) {
+// Begin starts the authentication process, up to the point where a captcha can be presented or not.
+// if there's no captcha, Finish() can be called with an empty captcha answer, if not, the captcha must be solved and passed to finish.
+// the Captcha type has some helpers to convert the captcha to a png or write it to a file (as png too)
+func (a *Auth) Begin() (captcha Captcha, err error) {
 	defer func() {
 		if err != nil {
 			a.logger.Error().Err(err).Msg("failed to authenticate")
@@ -615,7 +580,7 @@ func (a *Auth) Authenticate() (cred *Credentials, err error) {
 	}()
 
 	if a.EmailAddress == "" || a.Password == "" {
-		return nil, errors.New("invalid credentials")
+		return "", errors.New("invalid credentials")
 	}
 
 	a.logger.Info().Str("password", a.Password).Str("username", a.EmailAddress).Msg("Starting authentication process")
@@ -623,14 +588,15 @@ func (a *Auth) Authenticate() (cred *Credentials, err error) {
 	err = a.begin()
 
 	if err != nil {
-		return nil, err
+		return "", err
 	}
+
 	a.logger.Info().Msg("Got main page")
 
 	csrfToken, err := a.getCsrf()
 
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	a.logger.Info().Str("token", csrfToken).Msg("Got CSRF token")
@@ -638,29 +604,28 @@ func (a *Auth) Authenticate() (cred *Credentials, err error) {
 	nextUrl, err := a.postLoginPrompt(csrfToken)
 
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	a.logger.Info().Str("url", nextUrl).Msg("Got auth0 URL")
 
-	firstState, hasCaptcha, err := a.auth0AuthorizeAndIdentifier(nextUrl)
+	firstState, captcha, err := a.auth0AuthorizeAndIdentifier(nextUrl)
+
+	a.state = firstState
 
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
-	a.logger.Info().Bool("hasCaptcha", hasCaptcha).Msg("Got auth0 authorization")
+	a.logger.Info().Bool("hasCaptcha", captcha.Available()).Msg("Got auth0 authorization")
 
-	captchaAnswer := ""
+	return captcha, nil
 
-	if hasCaptcha {
-		reader := bufio.NewReader(os.Stdin)
-		fmt.Print("Captcha answer: ")
-		captchaAnswer, err = reader.ReadString('\n')
-		if err != nil {
-			return nil, err
-		}
-		captchaAnswer = strings.Replace(captchaAnswer, "\n", "", -1)
+}
+
+func (a *Auth) Finish(captcha string) (cred *Credentials, err error) {
+	if a.state == "" {
+		return nil, errors.New("state unavailable, make sure Begin was called and did not return an error before calling Finish")
 	}
 
 	oldCheckRedirect := a.session.CheckRedirect
@@ -675,7 +640,7 @@ func (a *Auth) Authenticate() (cred *Credentials, err error) {
 		a.session.CheckRedirect = oldCheckRedirect
 	}()
 
-	err = a.postUserName(firstState, captchaAnswer)
+	err = a.postUserName(a.state, captcha)
 
 	if err != nil {
 		return nil, err
@@ -683,14 +648,14 @@ func (a *Auth) Authenticate() (cred *Credentials, err error) {
 
 	a.logger.Info().Msg("Username sent")
 
-	newState, err := a.postPassword(firstState)
+	newState, err := a.postPassword(a.state)
 
 	if err != nil {
 		return nil, err
 	}
 	a.logger.Info().Msg("Password sent")
 
-	nextUrl, err = a.resumeSession(newState, firstState)
+	nextUrl, err := a.resumeSession(newState, a.state)
 
 	a.logger.Info().Msg("Session resumed")
 

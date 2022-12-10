@@ -26,10 +26,23 @@ func main() {
 		return
 	}
 
-	creds, err := auth.Authenticate()
+	captcha, err := auth.Begin()
 
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to log in")
+		log.Error().Err(err).Msg("Failed to begin auth")
+		return
+	}
+
+	var answer string
+	if captcha.Available() {
+		// Solve the captcha
+		answer = ""
+	}
+
+	creds, err := auth.Finish(answer)
+
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to finish auth")
 		return
 	}
 	logger.Info().Str("Access token", creds.AccessToken).Str("Expiry", creds.ExpiresAt).Msg("logged in")

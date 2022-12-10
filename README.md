@@ -14,26 +14,8 @@ Captcha answer can only be submitted through STDIN (aka typing) but that will be
 Pre-built binaries are not available currently, a CLI is planned.
 
 ## Lib usage 
-
+Check the full example on example/main.go
 ```go
-package main
-
-import (
-	"os"
-
-	"github.com/rodjunger/chatgptauth"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
-)
-
-type OnlyInfoHook struct{}
-
-func (h OnlyInfoHook) Run(e *zerolog.Event, level zerolog.Level, msg string) {
-	if level != zerolog.InfoLevel {
-		e.Discard()
-	}
-}
-
 func main() {
 	// Don't use zerolog.DebugLevel to log to console, it will make the output unreadable
 	logger := log.Output(zerolog.ConsoleWriter{Out: os.Stdout}).Hook(OnlyInfoHook{}).Level(zerolog.InfoLevel)
@@ -44,10 +26,23 @@ func main() {
 		return
 	}
 
-	creds, err := auth.Authenticate()
+	captcha, err := auth.Begin()
 
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to log in")
+		log.Error().Err(err).Msg("Failed to begin auth")
+		return
+	}
+
+	var answer string
+	if captcha.Available() {
+		// Solve the captcha
+		answer = ""
+	}
+
+	creds, err := auth.Finish(answer)
+
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to finish auth")
 		return
 	}
 	logger.Info().Str("Access token", creds.AccessToken).Str("Expiry", creds.ExpiresAt).Msg("logged in")
