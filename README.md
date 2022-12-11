@@ -3,7 +3,6 @@
 Extra care was put to ensure that requests match the browser requests in every aspect to avoid blocks, but you still may get rate limit.
 
 It is currently in a VERY wip state, things can and will change.
-Captcha answer can only be submitted through STDIN (aka typing) but that will be changed to better support use in other libraries and possibly captcha solvers.
 
 ## Installation
 
@@ -14,7 +13,7 @@ Captcha answer can only be submitted through STDIN (aka typing) but that will be
 Pre-built binaries are not available currently, a CLI is planned.
 
 ## Lib usage 
-Check the full example on example/main.go
+Check the full example including captcha handling on example/main.go
 ```go
 func main() {
 	// Don't use zerolog.DebugLevel to log to console, it will make the output unreadable

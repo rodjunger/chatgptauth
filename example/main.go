@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
 	"os"
+	"strings"
 
 	"github.com/rodjunger/chatgptauth"
 	"github.com/rs/zerolog"
@@ -19,7 +22,7 @@ func (h OnlyInfoHook) Run(e *zerolog.Event, level zerolog.Level, msg string) {
 func main() {
 	// Don't use zerolog.DebugLevel to log to console, it will make the output unreadable
 	logger := log.Output(zerolog.ConsoleWriter{Out: os.Stdout}).Hook(OnlyInfoHook{}).Level(zerolog.InfoLevel)
-	auth, err := chatgptauth.NewAuthClient("user", "password", "", &logger)
+	auth, err := chatgptauth.NewAuthClient("user", "pass", "", &logger)
 
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to create auth client")
@@ -34,9 +37,16 @@ func main() {
 	}
 
 	var answer string
+
 	if captcha.Available() {
-		// Solve the captcha
-		answer = ""
+		captcha.ToFile("captcha.png")
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Print("Captcha answer: ")
+		captchaAnswer, err := reader.ReadString('\n')
+		if err != nil {
+			return
+		}
+		answer = strings.Replace(captchaAnswer, "\n", "", -1)
 	}
 
 	creds, err := auth.Finish(answer)

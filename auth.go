@@ -583,7 +583,7 @@ func (a *Auth) Begin() (captcha Captcha, err error) {
 		return "", errors.New("invalid credentials")
 	}
 
-	a.logger.Info().Str("password", a.Password).Str("username", a.EmailAddress).Msg("Starting authentication process")
+	a.logger.Info().Str("username", a.EmailAddress).Msg("Starting authentication process")
 
 	err = a.begin()
 
